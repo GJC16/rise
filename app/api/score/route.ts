@@ -9,6 +9,8 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Accept, User-Agent',
 };
 
+const MIN_SCORE = 5;
+
 export async function OPTIONS() {
   return NextResponse.json({}, { status: 200, headers: CORS_HEADERS });
 }
@@ -33,16 +35,11 @@ export async function POST(req: NextRequest) {
     const workshopSnap = await db.doc('workshops/feb2026').get();
     if (workshopSnap.exists) {
       const ws = workshopSnap.data()!;
-
-      // ── ALL-STATIONS MODE ──────────────────────────────────────────────
-      // When admin clicks "Start All", allActive=true and activeStation=null.
-      // In this mode, check the per-station sub-document instead.
       const isAllMode = ws.allActive === true;
 
       if (isAllMode) {
-        // Check per-station sub-doc: ws.station1, ws.station2, etc.
-        const stationKey  = `station${stationNum}`;
-        const stationData = ws[stationKey];
+        const stationKeyName = `station${stationNum}`;
+        const stationData = ws[stationKeyName];
 
         if (!stationData || stationData.roundActive !== true) {
           console.log(`[ALL MODE] Rejected: station${stationNum} not active`);
@@ -52,7 +49,6 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // Check if this station's timer has expired
         if (stationData.roundStartedAt && stationData.roundTimeLimit) {
           const elapsedSec =
             (Date.now() - stationData.roundStartedAt) / 1000;
@@ -68,7 +64,6 @@ export async function POST(req: NextRequest) {
         console.log(`[ALL MODE] station${stationNum} accepted`);
 
       } else {
-        // ── SINGLE-STATION MODE (original logic) ────────────────────────
         if (!ws.roundActive) {
           console.log('Rejected: round not active');
           return NextResponse.json(
@@ -77,7 +72,6 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // activeStation === null means no station launched yet
         if (ws.activeStation === null || ws.activeStation === undefined) {
           console.log('Rejected: no active station');
           return NextResponse.json(
@@ -96,7 +90,6 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // Check top-level timer expiry for single-station mode
         if (ws.roundStartedAt && ws.roundTimeLimit) {
           const elapsedSec = (Date.now() - ws.roundStartedAt) / 1000;
           if (elapsedSec > ws.roundTimeLimit) {
@@ -134,9 +127,9 @@ export async function POST(req: NextRequest) {
     const completedStations = teamData.completedStations || [];
     const currentAttempts   = teamData[attemptKey] || 0;
 
-    // ── If fail, just register attempt — don't save score ─────────────────
+    // ── If fail, just register attempt — don't save score, retry stays open ──
     if (isFail) {
-      console.log('Fail attempt registered — no score saved');
+      console.log('Fail attempt registered — no score saved, retry allowed');
       return NextResponse.json(
         { message: 'Fail registered', attempts: currentAttempts + 1 },
         { status: 200, headers: CORS_HEADERS }
@@ -161,12 +154,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ── Apply attempt penalty cap ──────────────────────────────────────────
+    // ── Apply attempt penalty cap, floored at MIN_SCORE ─────────────────────
     let cappedScore = score;
     if      (currentAttempts === 1) cappedScore = Math.min(score, 800);
     else if (currentAttempts === 2) cappedScore = Math.min(score, 600);
     else if (currentAttempts >= 3)  cappedScore = Math.min(score, 400);
-    // currentAttempts === 0 → first winning attempt → no cap → full score
+    // currentAttempts === 0 → first winning attempt → no cap
+
+    cappedScore = Math.max(cappedScore, MIN_SCORE);
 
     console.log(
       `Score: raw=${score} attempts=${currentAttempts} capped=${cappedScore}`
